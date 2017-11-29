@@ -166,7 +166,7 @@ def advtrain(epoch):
         progress_bar(batch_idx, len(trainloader), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
             % (train_loss/(batch_idx+1), 100.*correct/total, correct, total))
 
-def test(epoch):
+def advtest(epoch):
     net.eval()
     test_loss = 0
     correct = 0
