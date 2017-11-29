@@ -5,7 +5,7 @@ from sklearn.preprocessing import OneHotEncoder
 class encoder(object):
     def __init__(self,level):
         self.k = level
-        self.onehotencoder = OneHotEncoder(n_values=k, sparse=False)
+        self.onehotencoder = OneHotEncoder(n_values=self.k, sparse=False)
 
     """
     input:natural image arr:n*w*h*c
