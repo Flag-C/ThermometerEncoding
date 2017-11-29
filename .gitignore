@@ -1,3 +1,4 @@
 /data
 *.pyc
 *.t7
+/checkpoint
