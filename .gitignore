@@ -2,3 +2,4 @@
 *.pyc
 *.t7
 /checkpoint
+/.idea
