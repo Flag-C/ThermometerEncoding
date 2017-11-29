@@ -17,6 +17,7 @@ from models import *
 from util import progress_bar
 from torch.autograd import Variable
 from encoder import encoder
+from LSPGA import LSPGA
 
 
 parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
@@ -71,6 +72,7 @@ if use_cuda:
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=0.9, weight_decay=5e-4)
 encoder = encoder(level=args.level)
+LSPGA = LSPGA(model=net,epsilon=0.032,k=args.level,delta=1.2,xi=1.5,step=7,criterion=criterion,encoder=encoder)
 
 # Training
 def train(epoch):
@@ -84,7 +86,7 @@ def train(epoch):
         channel0,channel1,channel2 = encoder.tempencoding(channel0),encoder.tempencoding(channel1),encoder.tempencoding(channel2)
         channel0, channel1, channel2 = torch.Tensor(channel0),torch.Tensor(channel1),torch.Tensor(channel2)
         if use_cuda:
-            channel0, channel1, channel2 = channel0.cuda(), channel1.cuda(), channel2.cuda()
+            channel0, channel1, channel2,targets = channel0.cuda(), channel1.cuda(), channel2.cuda(),targets.cuda()
         optimizer.zero_grad()
         channel0, channel1, channel2, targets = Variable(channel0),Variable(channel1),Variable(channel2), Variable(targets)
         outputs = net(channel0, channel1, channel2)
@@ -107,10 +109,13 @@ def test(epoch):
     correct = 0
     total = 0
     for batch_idx, (inputs, targets) in enumerate(testloader):
+        channel0,channel1,channel2=inputs.numpy()[:,0,:,:],inputs.numpy()[:,1,:,:],inputs.numpy()[:,2,:,:]
+        channel0,channel1,channel2 = encoder.tempencoding(channel0),encoder.tempencoding(channel1),encoder.tempencoding(channel2)
+        channel0, channel1, channel2 = torch.Tensor(channel0),torch.Tensor(channel1),torch.Tensor(channel2)
         if use_cuda:
-            inputs, targets = inputs.cuda(), targets.cuda()
-        inputs, targets = Variable(inputs, volatile=True), Variable(targets)
-        outputs = net(inputs)
+            channel0, channel1, channel2,targets = channel0.cuda(), channel1.cuda(), channel2.cuda(),targets.cuda()
+        channel0, channel1, channel2, targets = Variable(channel0),Variable(channel1),Variable(channel2), Variable(targets)
+        outputs = net(channel0, channel1, channel2)
         loss = criterion(outputs, targets)
 
         test_loss += loss.data[0]
@@ -134,6 +139,54 @@ def test(epoch):
             os.mkdir('checkpoint')
         torch.save(state, './checkpoint/ckpt.t7')
         best_acc = acc
+
+def advtrain(epoch):
+    print('\nEpoch: %d' % epoch)
+    net.train()
+    train_loss = 0
+    correct = 0
+    total = 0
+    for batch_idx, (inputs, targets) in enumerate(trainloader):
+        channel0,channel1,channel2 = LSPGA.attackthreechannel(inputs,targets)
+        channel0, channel1, channel2 = torch.Tensor(channel0),torch.Tensor(channel1),torch.Tensor(channel2)
+        if use_cuda:
+            channel0, channel1, channel2,targets = channel0.cuda(), channel1.cuda(), channel2.cuda(),targets.cuda()
+        optimizer.zero_grad()
+        channel0, channel1, channel2, targets = Variable(channel0),Variable(channel1),Variable(channel2), Variable(targets)
+        outputs = net(channel0, channel1, channel2)
+        loss = criterion(outputs, targets)
+        loss.backward()
+        optimizer.step()
+
+        train_loss += loss.data[0]
+        _, predicted = torch.max(outputs.data, 1)
+        total += targets.size(0)
+        correct += predicted.eq(targets.data).cpu().sum()
+
+        progress_bar(batch_idx, len(trainloader), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
+            % (train_loss/(batch_idx+1), 100.*correct/total, correct, total))
+
+def test(epoch):
+    net.eval()
+    test_loss = 0
+    correct = 0
+    total = 0
+    for batch_idx, (inputs, targets) in enumerate(testloader):
+        channel0, channel1, channel2 = LSPGA.attackthreechannel(inputs, targets)
+        channel0, channel1, channel2 = torch.Tensor(channel0),torch.Tensor(channel1),torch.Tensor(channel2)
+        if use_cuda:
+            channel0, channel1, channel2,targets = channel0.cuda(), channel1.cuda(), channel2.cuda(),targets.cuda()
+        channel0, channel1, channel2, targets = Variable(channel0),Variable(channel1),Variable(channel2), Variable(targets)
+        outputs = net(channel0, channel1, channel2)
+        loss = criterion(outputs, targets)
+
+        test_loss += loss.data[0]
+        _, predicted = torch.max(outputs.data, 1)
+        total += targets.size(0)
+        correct += predicted.eq(targets.data).cpu().sum()
+
+        progress_bar(batch_idx, len(testloader), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
+            % (test_loss/(batch_idx+1), 100.*correct/total, correct, total))
 
 
 for epoch in range(start_epoch, start_epoch+200):
