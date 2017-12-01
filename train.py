@@ -18,17 +18,22 @@ from util import progress_bar
 from torch.autograd import Variable
 from encoder import encoder
 from LSPGA import LSPGA
+from tensorboardX import SummaryWriter
 
 
 parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
 parser.add_argument('--lr', default=0.1, type=float, help='learning rate')
 parser.add_argument('--level', default=15, type=int, help='image quantization level')
 parser.add_argument('--resume', '-r', action='store_true', help='resume from checkpoint')
+parser.add_argument('--maxstep', '-m', default=7, type=int, help='max steps to train')
+parser.add_argument('--step', '-s', default=7, type=int, help='steps of attack')
+parser.add_argument('--log',default='them/res50',type=str,help='path of log')
 args = parser.parse_args()
 
 use_cuda = torch.cuda.is_available()
 best_acc = 0  # best test accuracy
 start_epoch = 0  # start from epoch 0 or last checkpoint epoch
+attackstep = args.step
 
 # Data
 print('==> Preparing data..')
@@ -61,8 +66,8 @@ if args.resume:
     start_epoch = checkpoint['epoch']
 else:
     print('==> Building model..')
-    net = ResNet50(level=args.level)
-
+    #net = ResNet50(level=args.level)
+    net = Wide_ResNet(depth=34,widen_factor=4,dropout_rate=0.3,num_classes=10,level=args.level)
 
 if use_cuda:
     net.cuda()
@@ -71,9 +76,10 @@ if use_cuda:
 
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=0.9, weight_decay=5e-4)
+scheduler = torch.optim.lr_scheduler.StepLR(optimizer,30)
 encoder = encoder(level=args.level)
-LSPGA = LSPGA(model=net,epsilon=0.032,k=args.level,delta=1.2,xi=1.5,step=7,criterion=criterion,encoder=encoder)
-
+attacker = LSPGA(model=net,epsilon=0.032,k=args.level,delta=1.2,xi=1.5,step=attackstep,criterion=criterion,encoder=encoder)
+writer = SummaryWriter(log_dir=args.log)
 # Training
 def train(epoch):
     print('\nEpoch: %d' % epoch)
@@ -141,13 +147,15 @@ def test(epoch):
         best_acc = acc
 
 def advtrain(epoch):
+    global attackstep
+    global attacker
     print('\nEpoch: %d' % epoch)
     net.train()
     train_loss = 0
     correct = 0
     total = 0
     for batch_idx, (inputs, targets) in enumerate(trainloader):
-        channel0,channel1,channel2 = LSPGA.attackthreechannel(inputs,targets)
+        channel0,channel1,channel2 = attacker.attackthreechannel_train(inputs,targets)
         channel0, channel1, channel2 = torch.Tensor(channel0),torch.Tensor(channel1),torch.Tensor(channel2)
         if use_cuda:
             channel0, channel1, channel2,targets = channel0.cuda(), channel1.cuda(), channel2.cuda(),targets.cuda()
@@ -162,17 +170,29 @@ def advtrain(epoch):
         _, predicted = torch.max(outputs.data, 1)
         total += targets.size(0)
         correct += predicted.eq(targets.data).cpu().sum()
+        if batch_idx==0:
+            advc0,advc1,advc2 = (channel[-3:].data.cpu().numpy() for channel in [channel0,channel1,channel2])
+            advc0,advc1,advc2 = (encoder.temp2img(advc) for advc in [advc0,advc1,advc2])
+            advc0,advc1,advc2 = (torch.Tensor(advc[:,np.newaxis,:,:]) for advc in [advc0,advc1,advc2])
+            advimg = torch.cat((advc0,advc1,advc2),dim=1)
+            advimg = torchvision.utils.make_grid(advimg)
+            writer.add_image('Image', advimg, epoch)
 
         progress_bar(batch_idx, len(trainloader), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
             % (train_loss/(batch_idx+1), 100.*correct/total, correct, total))
 
+    if 100.*correct/total>95 and attackstep<args.maxstep:
+        attacker = LSPGA(model=net, epsilon=0.032, k=args.level, delta=1.2, xi=1.5, step=attackstep, criterion=criterion,
+                      encoder=encoder)
+
 def advtest(epoch):
+    global attacker
     net.eval()
     test_loss = 0
     correct = 0
     total = 0
     for batch_idx, (inputs, targets) in enumerate(testloader):
-        channel0, channel1, channel2 = LSPGA.attackthreechannel(inputs, targets)
+        channel0, channel1, channel2 = attacker.attackthreechannel(inputs, targets)
         channel0, channel1, channel2 = torch.Tensor(channel0),torch.Tensor(channel1),torch.Tensor(channel2)
         if use_cuda:
             channel0, channel1, channel2,targets = channel0.cuda(), channel1.cuda(), channel2.cuda(),targets.cuda()
@@ -188,7 +208,21 @@ def advtest(epoch):
         progress_bar(batch_idx, len(testloader), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
             % (test_loss/(batch_idx+1), 100.*correct/total, correct, total))
 
+    acc = 100. * correct / total
+    state = {
+        'net': net.module if use_cuda else net,
+        'acc': acc,
+        'epoch': epoch,
+    }
+    if not os.path.isdir('checkpoint'):
+        os.mkdir('checkpoint')
+    torch.save(state, './checkpoint/ckpt.t7')
+
 
 for epoch in range(start_epoch, start_epoch+200):
-    train(epoch)
-    test(epoch)
+    advtrain(epoch)
+    scheduler.step()
+    if attackstep==0:
+        test(epoch)
+    else:
+        advtest(epoch)
