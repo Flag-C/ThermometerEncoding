@@ -25,7 +25,6 @@ parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
 parser.add_argument('--lr', default=0.1, type=float, help='learning rate')
 parser.add_argument('--level', default=15, type=int, help='image quantization level')
 parser.add_argument('--resume', '-r', action='store_true', help='resume from checkpoint')
-parser.add_argument('--maxstep', '-m', default=7, type=int, help='max steps to train')
 parser.add_argument('--step', '-s', default=7, type=int, help='steps of attack')
 parser.add_argument('--log',default='them/res50',type=str,help='path of log')
 args = parser.parse_args()
@@ -155,7 +154,7 @@ def advtrain(epoch):
     correct = 0
     total = 0
     for batch_idx, (inputs, targets) in enumerate(trainloader):
-        channel0,channel1,channel2 = attacker.attackthreechannel_train(inputs,targets)
+        channel0,channel1,channel2 = attacker.attackthreechannel(inputs,targets)
         channel0, channel1, channel2 = torch.Tensor(channel0),torch.Tensor(channel1),torch.Tensor(channel2)
         if use_cuda:
             channel0, channel1, channel2,targets = channel0.cuda(), channel1.cuda(), channel2.cuda(),targets.cuda()
@@ -180,10 +179,6 @@ def advtrain(epoch):
 
         progress_bar(batch_idx, len(trainloader), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
             % (train_loss/(batch_idx+1), 100.*correct/total, correct, total))
-
-    if 100.*correct/total>95 and attackstep<args.maxstep:
-        attacker = LSPGA(model=net, epsilon=0.032, k=args.level, delta=1.2, xi=1.5, step=attackstep, criterion=criterion,
-                      encoder=encoder)
 
 def advtest(epoch):
     global attacker
@@ -220,9 +215,10 @@ def advtest(epoch):
 
 
 for epoch in range(start_epoch, start_epoch+200):
-    advtrain(epoch)
     scheduler.step()
     if attackstep==0:
+        train(epoch)
         test(epoch)
     else:
+        advtrain(epoch)
         advtest(epoch)
